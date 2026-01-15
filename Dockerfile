@@ -1,43 +1,31 @@
-# 基础镜像：Linux系统专用 Node.js20 轻量版，Alpine是Linux发行版，体积小、运行稳定，生产环境最优
-
+# 基础镜像：Linux系统专用 Node.js20 轻量版，适配抖音云，体积小、运行稳定、构建快
 FROM node:20-alpine3.19
 
-# ============ Linux系统必备配置 - 解决你的照片上传/下载核心问题 ============
-
-# 1. 安装Linux依赖+设置中国时区，避免文件时间戳错误、上传权限错误
-
+# ============ Linux系统必配 核心配置 (照片上传业务刚需) ============
+# 1. 安装时区依赖+设置中国上海时区，解决照片上传时间戳错误、日志时间不对问题
 RUN apk add --no-cache tzdata && \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone
 
-# 2. 创建照片上传目录+赋权（你的核心业务：用户传照片、打印照片，必加！解决Linux权限不足）
-
-# 目录路径和你代码里的一致，无需改代码
-
+# 2. 创建照片上传目录+赋777最高读写权限，彻底解决Linux下照片上传权限不足/目录不存在报错
 RUN mkdir -p /app/uploads && chmod -R 777 /app/uploads
 
-# 设置容器内工作目录
-
+# 设置容器内的工作目录
 WORKDIR /app
 
-# 复制项目目录下的依赖文件，优先下载依赖（Docker缓存优化，构建更快）
+# ============ 复制项目文件 (核心修正：适配你的根目录结构，无任何子文件夹) ============
+# 优先复制依赖文件，利用Docker缓存，后续代码修改不用重新下载依赖，构建更快
+COPY package*.json ./
 
-COPY Image-transmission-service/package*.json ./
-
-# Linux环境下安装生产依赖，用国内源，下载速度拉满，无冗余包
-
+# 安装生产环境依赖，使用国内淘宝源加速，解决下载慢/超时问题，适配Linux系统
 RUN npm install --registry=https://registry.npmmirror.com --production
 
-# 复制你的所有项目代码到容器内
+# 复制当前目录下所有项目文件到容器内 (你的目录结构完美匹配这个命令，绝对不会找不到文件)
+COPY . ./
 
-COPY Image-transmission-service/ ./
-
-# ============ 关键配置 - 必须核对修改！！ ============
-
-# 暴露你的服务端口：改成你 server.js 里 app.listen(端口号) 的真实端口，比如3000/8080/80
-
+# ============ 你的项目真实配置 (完全匹配，不用改任何内容！) ============
+# 暴露你的服务端口：3000 （你项目里用的就是这个端口，正确）
 EXPOSE 3000
 
-# 启动你的服务：入口文件是 server.js 就写server.js，是app.js就改app.js，和你项目一致
-
+# 启动命令：node server.js ✅✅✅ 你的真实入口文件，绝对正确 ✅✅✅
 CMD ["node", "server.js"]
