@@ -86,10 +86,16 @@ const upload = multer({ storage });
 // 处理文件上传请求
 app.post('/upload', upload.single('file'), (req, res) => {
   const timestamp = new Date().toISOString();
-  console.log('收到上传请求：');
+  console.log('=== 收到上传请求 ===');
+  console.log(`${timestamp} - 客户端IP：`, req.ip);
+  console.log('请求方法：', req.method);
+  console.log('请求头：', req.headers);
+  console.log('表单数据：', req.body);
   console.log('用户名称：', req.body.userName);
   console.log('上传文件：', req.file ? req.file.filename : '无文件');
-  console.log(`${timestamp} - 客户端IP：`, req.ip);
+  console.log('文件详情：', req.file);
+  
+  // 响应所有请求，无论是否有文件
   if (req.file) {
     res.json({
       success: true,
@@ -736,13 +742,18 @@ app.delete('/delete-user/:userName', (req, res) => {
   }
 });
 
-// 测试路由
+// 根路由 - 健康检查
 app.get('/', (req, res) => {
+  console.log('=== 收到根路由请求 ===');
+  console.log('客户端IP：', req.ip);
+  console.log('请求头：', req.headers);
   res.json({
+    success: true,
     message: '服务器运行正常',
     uploadEndpoint: '/upload',
     adminEndpoint: '/admin',
-    uploadDir: uploadDir
+    uploadDir: uploadDir,
+    timestamp: new Date().toISOString()
   });
 });
 
