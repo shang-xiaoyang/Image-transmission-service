@@ -13,6 +13,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@volcengine/tos-sdk": "^2.9.0",
     "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",

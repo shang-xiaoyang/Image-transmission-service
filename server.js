@@ -6,6 +6,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const archiver = require('archiver');
+const { TosClient } = require('@volcengine/tos-sdk');
 
 // 创建日志目录
 const logDir = path.join(__dirname, 'logs');
@@ -92,6 +93,34 @@ archiver.defaults = {
   zlib: { level: 9 }
 };
 
+// 配置TOS客户端（在抖音云环境中从环境变量获取凭证）
+let tosClient = null;
+let enableTOS = false;
+
+try {
+  // 尝试从环境变量获取TOS凭证
+  const accessKeyId = process.env.TOS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID;
+  const accessKeySecret = process.env.TOS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY;
+  
+  if (accessKeyId && accessKeySecret) {
+    tosClient = new TosClient({
+      region: 'cn-beijing', // 根据域名中的tos-beijing判断地区
+      endpoint: 'https://tt10d96664eba8f7901-env-ot20zyxfia.tos-beijing.volces.com', // 对象存储域名
+      accessKeyId: accessKeyId,
+      accessKeySecret: accessKeySecret,
+    });
+    enableTOS = true;
+    logger.info('TOS客户端初始化成功');
+  } else {
+    logger.info('未配置TOS凭证，将使用本地存储');
+  }
+} catch (error) {
+  logger.error('TOS客户端初始化失败:', error);
+}
+
+// 桶名称
+const bucketName = 'tt10d96664eba8f7901-env-ot20zyxfia'; // 桶名称
+
 // 管理员用户数据文件路径
 const adminUsersPath = path.join(__dirname, 'adminUsers.json');
 
@@ -136,8 +165,10 @@ if (!fs.existsSync(uploadDir)) {
 // 配置 multer 存储
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    // 根据用户名将照片分类存储
-    const userName = req.body.userName || 'unknown';
+    // 根据用户名将照片分类存储，防止路径遍历攻击
+    const rawUserName = req.body.userName || 'unknown';
+    // 过滤用户名中的危险字符
+    const userName = rawUserName.replace(/[\/\\:*?"<>|]/g, '').substring(0, 50);
     const userDir = path.join(uploadDir, userName);
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
@@ -161,67 +192,189 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage });
-
-// 添加通用POST路由捕获所有POST请求，用于调试
-app.post('*', (req, res, next) => {
-  if (req.path === '/upload') {
-    // 如果是上传请求，继续处理
-    next();
-    return;
+// 配置multer上传限制
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 限制文件大小为5MB
+    fieldSize: 1024 * 1024 // 限制表单字段大小为1MB
+  },
+  fileFilter: (req, file, cb) => {
+    // 只允许上传图片文件
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('只允许上传JPEG、PNG、GIF、WEBP格式的图片文件'), false);
+    }
   }
-  
+});
+
+// 添加请求日志中间件
+app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  logger.info('=== 收到未知POST请求 ===');
-  logger.info(`${timestamp} - 客户端IP：`, req.ip);
-  logger.info('请求路径：', req.path);
+  logger.info(`${timestamp} - ${req.method} ${req.path} from ${req.ip}`);
   logger.info('请求头：', req.headers);
-  logger.info('请求内容类型：', req.headers['content-type']);
-  
-  // 读取请求体
-  let body = '';
-  req.on('data', chunk => {
-    body += chunk.toString();
-  });
-  
-  req.on('end', () => {
-    logger.info('请求体：', body);
-    res.status(200).json({
+  next();
+});
+
+// 处理multer上传错误
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    logger.error('文件大小超过限制:', err);
+    return res.status(400).json({
       success: false,
-      message: '未知的POST请求',
-      receivedPath: req.path
+      message: '文件大小超过限制，最大支持5MB'
     });
-  });
+  } else if (err.code === 'LIMIT_FIELD_SIZE') {
+    logger.error('表单字段大小超过限制:', err);
+    return res.status(400).json({
+      success: false,
+      message: '表单字段大小超过限制'
+    });
+  } else if (err.code === 'LIMIT_FILE_COUNT') {
+    logger.error('文件数量超过限制:', err);
+    return res.status(400).json({
+      success: false,
+      message: '文件数量超过限制'
+    });
+  } else if (err.message.includes('只允许上传')) {
+    logger.error('文件类型不允许:', err);
+    return res.status(400).json({
+      success: false,
+      message: err.message
+    });
+  }
+  next(err);
 });
 
 // 处理文件上传请求
-app.post('/upload', upload.single('file'), (req, res) => {
+app.post('/upload', upload.single('file'), async (req, res) => {
   const timestamp = new Date().toISOString();
   logger.info('=== 收到上传请求 ===');
   logger.info(`${timestamp} - 客户端IP：`, req.ip);
   logger.info('请求方法：', req.method);
+  logger.info('请求路径：', req.path);
   logger.info('请求头：', req.headers);
   logger.info('请求内容类型：', req.headers['content-type']);
-  logger.info('表单数据：', req.body);
-  logger.info('用户名称：', req.body.userName);
-  logger.info('上传文件：', req.file ? req.file.filename : '无文件');
-  logger.info('文件详情：', req.file);
-  logger.info('是否有文件：', req.file ? '是' : '否');
-  logger.info('请求方法：', req.method);
-  logger.info('请求路径：', req.path);
   logger.info('请求查询参数：', req.query);
+  logger.info('原始表单数据：', req.body);
+  
+  // 记录用户名信息
+  const rawUserName = req.body.userName || 'unknown';
+  const filteredUserName = rawUserName.replace(/[\/\\:*?"<>|]/g, '').substring(0, 50);
+  logger.info('原始用户名：', rawUserName);
+  logger.info('过滤后的用户名：', filteredUserName);
+  
+  logger.info('上传文件：', req.file ? req.file.filename : '无文件');
+  if (req.file) {
+    logger.info('文件详情：', {
+      originalname: req.file.originalname,
+      filename: req.file.filename,
+      mimetype: req.file.mimetype,
+      size: (req.file.size / 1024).toFixed(2) + 'KB',
+      path: req.file.path
+    });
+  } else {
+    logger.info('文件详情：', null);
+  }
+  logger.info('是否有文件：', req.file ? '是' : '否');
+  logger.info('是否启用TOS：', enableTOS ? '是' : '否');
   
   // 响应所有请求，无论是否有文件
   if (req.file) {
-    res.json({
-      success: true,
-      message: '上传成功',
-      data: {
-        fileName: req.file.filename,
-        userName: req.body.userName,
-        filePath: req.file.path
+    try {
+      // 过滤用户名中的危险字符，防止路径遍历攻击
+      const rawUserName = req.body.userName || 'unknown';
+      const userName = rawUserName.replace(/[\/\\:*?"<>|]/g, '').substring(0, 50);
+      
+      // 如果启用了TOS，上传到对象存储
+      if (enableTOS && tosClient) {
+        // 构建TOS对象键
+        const objectKey = `${userName}/${req.file.filename}`;
+        
+        logger.info('开始上传到TOS', { bucketName, objectKey });
+        
+        // 上传文件到TOS
+        const uploadResult = await tosClient.putObject({
+          bucket: bucketName,
+          key: objectKey,
+          body: fs.createReadStream(req.file.path),
+          contentType: req.file.mimetype
+        });
+        
+        logger.info('TOS上传成功', uploadResult);
+        
+        // 构建对象存储URL
+        const objectUrl = `${tosClient.config.endpoint}/${bucketName}/${objectKey}`;
+        
+        // 删除本地临时文件
+        fs.unlinkSync(req.file.path);
+        logger.info('删除本地临时文件成功', req.file.path);
+        
+        logger.info('TOS上传成功，响应客户端');
+        res.json({
+          success: true,
+          message: '上传成功',
+          data: {
+            fileName: req.file.filename,
+            userName: userName,
+            objectKey: objectKey,
+            objectUrl: objectUrl,
+            bucketName: bucketName,
+            storageType: 'tos',
+            fileSize: (req.file.size / 1024).toFixed(2) + 'KB',
+            fileType: req.file.mimetype
+          }
+        });
+      } else {
+        // 如果未启用TOS，使用本地存储
+        logger.info('使用本地存储');
+        
+        logger.info('本地存储成功，响应客户端');
+        res.json({
+          success: true,
+          message: '上传成功',
+          data: {
+            fileName: req.file.filename,
+            userName: userName,
+            filePath: req.file.path,
+            storageType: 'local',
+            fileSize: (req.file.size / 1024).toFixed(2) + 'KB',
+            fileType: req.file.mimetype
+          }
+        });
       }
-    });
+    } catch (error) {
+      logger.error('上传失败:', {
+        error: error,
+        errorMessage: error.message,
+        errorStack: error.stack,
+        userName: userName,
+        fileInfo: req.file ? {
+          filename: req.file.filename,
+          path: req.file.path,
+          size: req.file.size
+        } : null,
+        storageType: enableTOS ? 'tos' : 'local'
+      });
+      
+      // 删除本地临时文件
+      if (req.file && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+          logger.info('删除本地临时文件成功', req.file.path);
+        } catch (unlinkError) {
+          logger.error('删除本地临时文件失败:', unlinkError);
+        }
+      }
+      
+      res.json({
+        success: false,
+        message: enableTOS ? '上传到对象存储失败' : '本地存储失败',
+        error: process.env.NODE_ENV === 'production' ? '上传失败，请稍后重试' : error.message
+      });
+    }
   } else {
     res.json({
       success: false,
@@ -272,6 +425,16 @@ function updateUserPassword(username, newPassword) {
   
   return saveAdminUsers(users);
 }
+
+// 全局错误处理中间件
+app.use((err, req, res, next) => {
+  logger.error('未处理的错误:', err);
+  res.status(500).json({
+    success: false,
+    message: '服务器内部错误',
+    error: process.env.NODE_ENV === 'production' ? undefined : err.message
+  });
+});
 
 // 登录页面
 app.get('/login', (req, res) => {
