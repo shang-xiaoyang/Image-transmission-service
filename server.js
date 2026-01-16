@@ -141,8 +141,9 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 为JSON和URL编码的请求设置更大的限制
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 配置会话管理
 app.use(session({
@@ -197,7 +198,7 @@ const upload = multer({
   storage: storage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 限制文件大小为5MB
-    fieldSize: 1024 * 1024 // 限制表单字段大小为1MB
+    fieldSize: 5 * 1024 * 1024 // 限制表单字段大小为5MB
   },
   fileFilter: (req, file, cb) => {
     // 只允许上传图片文件
@@ -210,42 +211,125 @@ const upload = multer({
   }
 });
 
-// 添加请求日志中间件
+// 添加请求日志中间件（记录请求开始时间和完整信息）
 app.use((req, res, next) => {
+  // 记录请求开始时间
+  req.startTime = Date.now();
   const timestamp = new Date().toISOString();
+  
+  logger.info('=== 请求开始 ===');
   logger.info(`${timestamp} - ${req.method} ${req.path} from ${req.ip}`);
   logger.info('请求头：', req.headers);
+  logger.info('请求查询参数：', req.query);
+  
+  // 记录请求结束信息
+  const originalSend = res.send;
+  res.send = function(data) {
+    // 计算请求处理时间
+    const processTime = Date.now() - req.startTime;
+    
+    logger.info('=== 请求结束 ===');
+    logger.info(`${req.method} ${req.path} 响应状态：${res.statusCode}`);
+    logger.info(`请求处理时间：${processTime}ms`);
+    
+    // 记录响应内容（仅记录关键信息，避免日志过大）
+    if (typeof data === 'string') {
+      try {
+        const responseObj = JSON.parse(data);
+        logger.info('响应内容：', {
+          success: responseObj.success,
+          message: responseObj.message,
+          hasData: !!responseObj.data
+        });
+      } catch (e) {
+        // 如果不是JSON，只记录响应长度
+        logger.info(`响应内容长度：${data.length}字符`);
+      }
+    } else if (typeof data === 'object') {
+      logger.info('响应内容：', {
+        success: data.success,
+        message: data.message,
+        hasData: !!data.data
+      });
+    }
+    
+    // 调用原始的send方法
+    return originalSend.apply(res, arguments);
+  };
+  
   next();
 });
 
-// 处理multer上传错误
+// 处理multer上传错误和其他错误
 app.use((err, req, res, next) => {
+  // 记录错误发生的时间和请求信息
+  const timestamp = new Date().toISOString();
+  logger.error('=== 错误发生 ===');
+  logger.error(`${timestamp} - ${req.method} ${req.path} 错误类型：${err.code || 'unknown'}`);
+  logger.error('错误信息：', err.message);
+  logger.error('错误堆栈：', err.stack);
+  
+  // 记录请求上下文
+  if (req.body) {
+    logger.error('请求表单数据：', req.body);
+  }
+  
   if (err.code === 'LIMIT_FILE_SIZE') {
-    logger.error('文件大小超过限制:', err);
+    logger.error('文件大小超过限制:', {
+      limit: '5MB',
+      receivedType: req.file ? req.file.mimetype : 'unknown'
+    });
     return res.status(400).json({
       success: false,
       message: '文件大小超过限制，最大支持5MB'
     });
   } else if (err.code === 'LIMIT_FIELD_SIZE') {
-    logger.error('表单字段大小超过限制:', err);
+    logger.error('表单字段大小超过限制:', {
+      limit: '5MB',
+      fieldName: err.field || 'unknown'
+    });
     return res.status(400).json({
       success: false,
       message: '表单字段大小超过限制'
     });
   } else if (err.code === 'LIMIT_FILE_COUNT') {
-    logger.error('文件数量超过限制:', err);
+    logger.error('文件数量超过限制:', {
+      limit: 1, // 当前只支持单文件上传
+      receivedCount: err.count || 0
+    });
     return res.status(400).json({
       success: false,
       message: '文件数量超过限制'
     });
   } else if (err.message.includes('只允许上传')) {
-    logger.error('文件类型不允许:', err);
+    logger.error('文件类型不允许:', {
+      receivedType: req.file ? req.file.mimetype : 'unknown',
+      allowedTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+    });
     return res.status(400).json({
       success: false,
       message: err.message
     });
+  } else if (err.code === 'ENOENT') {
+    logger.error('文件或目录不存在:', err.path);
+    return res.status(404).json({
+      success: false,
+      message: '文件或目录不存在'
+    });
+  } else if (err.code === 'EACCES') {
+    logger.error('权限不足:', err.path);
+    return res.status(500).json({
+      success: false,
+      message: '服务器权限不足'
+    });
   }
-  next(err);
+  
+  // 处理其他未捕获的错误
+  logger.error('未处理的错误:', err);
+  res.status(500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'production' ? '服务器内部错误' : '未处理的错误: ' + err.message
+  });
 });
 
 // 处理文件上传请求
