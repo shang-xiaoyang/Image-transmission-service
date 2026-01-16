@@ -7,6 +7,86 @@ const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const archiver = require('archiver');
 
+// 创建日志目录
+const logDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+
+// 自定义日志工具
+class Logger {
+  constructor() {
+    this.logDir = logDir;
+  }
+  
+  // 获取当前日志文件名（按日期）
+  getCurrentLogFileName() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}${month}${day}.log`;
+  }
+  
+  // 获取当前日志文件路径
+  getCurrentLogFilePath() {
+    return path.join(this.logDir, this.getCurrentLogFileName());
+  }
+  
+  // 记录日志
+  log(...messages) {
+    const timestamp = new Date().toISOString();
+    
+    // 将所有消息转换为字符串，特别是对象类型
+    const stringMessages = messages.map(msg => {
+      if (typeof msg === 'object' && msg !== null) {
+        try {
+          return JSON.stringify(msg);
+        } catch (e) {
+          return String(msg);
+        }
+      }
+      return String(msg);
+    });
+    
+    const logMessage = `${timestamp} - ${stringMessages.join(' ')}\n`;
+    
+    // 输出到控制台（保持原始格式便于查看）
+    console.log(...messages);
+    
+    // 写入文件（使用JSON字符串格式）
+    const logFilePath = this.getCurrentLogFilePath();
+    try {
+      fs.appendFileSync(logFilePath, logMessage, 'utf8');
+    } catch (error) {
+      logger.error('写入日志文件失败:', error);
+    }
+  }
+  
+  // 记录信息级日志
+  info(...messages) {
+    this.log('[INFO]', ...messages);
+  }
+  
+  // 记录错误级日志
+  error(...messages) {
+    this.log('[ERROR]', ...messages);
+  }
+  
+  // 记录警告级日志
+  warn(...messages) {
+    this.log('[WARN]', ...messages);
+  }
+  
+  // 记录调试级日志
+  debug(...messages) {
+    this.log('[DEBUG]', ...messages);
+  }
+}
+
+// 创建日志实例
+const logger = new Logger();
+
 // 设置archiver的并发限制
 archiver.defaults = {
   zlib: { level: 9 }
@@ -86,14 +166,14 @@ const upload = multer({ storage });
 // 处理文件上传请求
 app.post('/upload', upload.single('file'), (req, res) => {
   const timestamp = new Date().toISOString();
-  console.log('=== 收到上传请求 ===');
-  console.log(`${timestamp} - 客户端IP：`, req.ip);
-  console.log('请求方法：', req.method);
-  console.log('请求头：', req.headers);
-  console.log('表单数据：', req.body);
-  console.log('用户名称：', req.body.userName);
-  console.log('上传文件：', req.file ? req.file.filename : '无文件');
-  console.log('文件详情：', req.file);
+  logger.info('=== 收到上传请求 ===');
+  logger.info(`${timestamp} - 客户端IP：`, req.ip);
+  logger.info('请求方法：', req.method);
+  logger.info('请求头：', req.headers);
+  logger.info('表单数据：', req.body);
+  logger.info('用户名称：', req.body.userName);
+  logger.info('上传文件：', req.file ? req.file.filename : '无文件');
+  logger.info('文件详情：', req.file);
   
   // 响应所有请求，无论是否有文件
   if (req.file) {
@@ -120,7 +200,7 @@ function readAdminUsers() {
     const data = fs.readFileSync(adminUsersPath, 'utf8');
     return JSON.parse(data);
   } catch (error) {
-    console.error('读取管理员用户文件失败:', error);
+    logger.error('读取管理员用户文件失败:', error);
     return [];
   }
 }
@@ -131,7 +211,7 @@ function saveAdminUsers(users) {
     fs.writeFileSync(adminUsersPath, JSON.stringify(users, null, 2));
     return true;
   } catch (error) {
-    console.error('保存管理员用户文件失败:', error);
+    logger.error('保存管理员用户文件失败:', error);
     return false;
   }
 }
@@ -281,7 +361,7 @@ app.post('/login', (req, res) => {
 app.get('/logout', (req, res) => {
   req.session.destroy((err) => {
     if (err) {
-      console.error('登出失败:', err);
+      logger.error('登出失败:', err);
     }
     res.redirect('/login');
   });
@@ -565,7 +645,7 @@ app.get('/admin', (req, res) => {
             }
           })
           .catch(error => {
-            console.error('删除错误:', error);
+            logger.error('删除错误:', error);
             alert('删除失败，请稍后重试');
           });
         }
@@ -634,7 +714,7 @@ app.get('/download-all/:userName', (req, res) => {
     
     // 监听错误
     archive.on('error', (err) => {
-      console.error('ZIP生成错误:', err);
+      logger.error('ZIP生成错误:', err);
       if (!res.headersSent) {
         res.status(500).json({ success: false, message: 'ZIP文件生成失败' });
       }
@@ -642,7 +722,7 @@ app.get('/download-all/:userName', (req, res) => {
     
     // 监听完成
     archive.on('finish', () => {
-      console.log('ZIP文件生成完成');
+      logger.info('ZIP文件生成完成');
     });
     
     // 管道到响应
@@ -662,7 +742,7 @@ app.get('/download-all/:userName', (req, res) => {
     archive.finalize();
     
   } catch (error) {
-    console.error('批量下载错误:', error);
+    logger.error('批量下载错误:', error);
     res.status(500).json({ success: false, message: '批量下载失败' });
   }
 });
@@ -706,13 +786,13 @@ app.delete('/delete-photo/:userName/:photoName', (req, res) => {
   try {
     if (fs.existsSync(photoPath)) {
       fs.unlinkSync(photoPath);
-      console.log(`删除照片：${userName}/${photoName}`);
+      logger.info(`删除照片：${userName}/${photoName}`);
       res.json({ success: true, message: '照片删除成功' });
     } else {
       res.status(404).json({ success: false, message: '照片不存在' });
     }
   } catch (error) {
-    console.error('删除照片错误:', error);
+    logger.error('删除照片错误:', error);
     res.status(500).json({ success: false, message: '照片删除失败' });
   }
 });
@@ -731,22 +811,22 @@ app.delete('/delete-user/:userName', (req, res) => {
     if (fs.existsSync(userDir)) {
       // 删除用户目录及其所有内容
       fs.rmSync(userDir, { recursive: true, force: true });
-      console.log(`删除用户所有照片：${userName}`);
+      logger.info(`删除用户所有照片：${userName}`);
       res.json({ success: true, message: '用户照片删除成功' });
     } else {
       res.status(404).json({ success: false, message: '用户不存在' });
     }
   } catch (error) {
-    console.error('删除用户照片错误:', error);
+    logger.error('删除用户照片错误:', error);
     res.status(500).json({ success: false, message: '用户照片删除失败' });
   }
 });
 
 // 根路由 - 健康检查
 app.get('/', (req, res) => {
-  console.log('=== 收到根路由请求 ===');
-  console.log('客户端IP：', req.ip);
-  console.log('请求头：', req.headers);
+  logger.info('=== 收到根路由请求 ===');
+  logger.info('客户端IP：', req.ip);
+  logger.info('请求头：', req.headers);
   res.json({
     success: true,
     message: '服务器运行正常',
@@ -762,9 +842,10 @@ app.get('/', (req, res) => {
 const port = process.env.PORT || 8000;
 // 监听所有接口，允许网络访问
 app.listen(port, '0.0.0.0', () => {
-  console.log(`服务器运行在 http://0.0.0.0:${port}`);
-  console.log(`上传目录：${uploadDir}`);
-  console.log(`测试地址：http://127.0.0.1:${port}/`);
-  console.log(`网络访问地址：http://10.185.210.1:${port}/`);
-  console.log(`环境变量PORT：${process.env.PORT}`);
+  logger.info(`服务器运行在 http://0.0.0.0:${port}`);
+  logger.info(`上传目录：${uploadDir}`);
+  logger.info(`测试地址：http://127.0.0.1:${port}/`);
+  logger.info(`网络访问地址：http://10.185.210.1:${port}/`);
+  logger.info(`环境变量PORT：${process.env.PORT}`);
+  logger.info(`日志目录：${logDir}`);
 });
