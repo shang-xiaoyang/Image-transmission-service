@@ -163,6 +163,37 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+// 添加通用POST路由捕获所有POST请求，用于调试
+app.post('*', (req, res, next) => {
+  if (req.path === '/upload') {
+    // 如果是上传请求，继续处理
+    next();
+    return;
+  }
+  
+  const timestamp = new Date().toISOString();
+  logger.info('=== 收到未知POST请求 ===');
+  logger.info(`${timestamp} - 客户端IP：`, req.ip);
+  logger.info('请求路径：', req.path);
+  logger.info('请求头：', req.headers);
+  logger.info('请求内容类型：', req.headers['content-type']);
+  
+  // 读取请求体
+  let body = '';
+  req.on('data', chunk => {
+    body += chunk.toString();
+  });
+  
+  req.on('end', () => {
+    logger.info('请求体：', body);
+    res.status(200).json({
+      success: false,
+      message: '未知的POST请求',
+      receivedPath: req.path
+    });
+  });
+});
+
 // 处理文件上传请求
 app.post('/upload', upload.single('file'), (req, res) => {
   const timestamp = new Date().toISOString();
@@ -170,10 +201,15 @@ app.post('/upload', upload.single('file'), (req, res) => {
   logger.info(`${timestamp} - 客户端IP：`, req.ip);
   logger.info('请求方法：', req.method);
   logger.info('请求头：', req.headers);
+  logger.info('请求内容类型：', req.headers['content-type']);
   logger.info('表单数据：', req.body);
   logger.info('用户名称：', req.body.userName);
   logger.info('上传文件：', req.file ? req.file.filename : '无文件');
   logger.info('文件详情：', req.file);
+  logger.info('是否有文件：', req.file ? '是' : '否');
+  logger.info('请求方法：', req.method);
+  logger.info('请求路径：', req.path);
+  logger.info('请求查询参数：', req.query);
   
   // 响应所有请求，无论是否有文件
   if (req.file) {
