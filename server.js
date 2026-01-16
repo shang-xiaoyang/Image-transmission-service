@@ -85,6 +85,7 @@ const upload = multer({ storage });
 
 // 处理文件上传请求
 app.post('/upload', upload.single('file'), (req, res) => {
+  const timestamp = new Date().toISOString();
   console.log('收到上传请求：');
   console.log('用户名称：', req.body.userName);
   console.log('上传文件：', req.file ? req.file.filename : '无文件');
